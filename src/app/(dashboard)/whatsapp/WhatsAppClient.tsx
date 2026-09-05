@@ -21,7 +21,14 @@ import {
   LogOut,
   Settings,
   Zap,
+  RotateCcw,
+  FileText,
 } from 'lucide-react';
+import {
+  DEFAULT_NOTIFICATION_TEMPLATE,
+  TEMPLATE_VARIABLES,
+  renderNotificationMessage,
+} from '@/lib/whatsapp-message-template';
 
 const emptySubscribe = () => () => {};
 
@@ -51,6 +58,7 @@ export function WhatsAppClient({ proximasMissas }: WhatsAppClientProps) {
   const textareaMensagemId = useId();
   const horarioDisparoId = useId();
   const ativarAgendadorId = useId();
+  const templateTextareaId = useId();
 
   // Estados de conexão Baileys
   const [status, setStatus] = useState<'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'CONNECTED'>('DISCONNECTED');
@@ -70,6 +78,10 @@ export function WhatsAppClient({ proximasMissas }: WhatsAppClientProps) {
   const [userEditedTexto, setUserEditedTexto] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [sendFeedback, setSendFeedback] = useState<{ type: 'success' | 'danger'; msg: string } | null>(null);
+
+  // Estados do modelo de mensagem (Template)
+  const [messageTemplate, setMessageTemplate] = useState<string>(DEFAULT_NOTIFICATION_TEMPLATE);
+  const [columnMissingWarning, setColumnMissingWarning] = useState<boolean>(false);
 
   // Estados do agendador automático diário (Lembrete da Véspera)
   const [autoReminderEnabled, setAutoReminderEnabled] = useState<boolean>(false);
@@ -129,8 +141,14 @@ export function WhatsAppClient({ proximasMissas }: WhatsAppClientProps) {
       ministrosTexto += `${idx + 1}. ${mencaoTag} (${m.nome})${extraSubst}\n`;
     });
 
-    return `🔔 *LEMBRETE DE ESCALA - COMUNIDADE SANTA CRUZ* 🔔\n\nCelebração: *${cel.descricao}*\n📅 Data: *${nomeDiaDaSemana}, ${dataBR}*\n⏰ Horário: *${hora}*\n\n*Ministros escalados:*\n${ministrosTexto || 'Nenhum ministro escalado.\n'}\nFavor chegar com *20 minutos de antecedência*. Em caso de necessidade de substituição, favor avisar previamente aqui no grupo.\n\n_Que Deus abençoe a todos e bom serviço ao altar!_ 🙏✨`;
-  }, [missaSelecionada]);
+    return renderNotificationMessage(messageTemplate, {
+      celebracao: cel.descricao,
+      data: dataBR,
+      dia_semana: nomeDiaDaSemana,
+      horario: hora,
+      ministros: ministrosTexto,
+    });
+  }, [missaSelecionada, messageTemplate]);
 
   const textoExibido = userEditedTexto !== null ? userEditedTexto : defaultTexto;
 
@@ -254,6 +272,9 @@ export function WhatsAppClient({ proximasMissas }: WhatsAppClientProps) {
           if (data.groupId) {
             setSelectedGroupId((prev) => prev || data.groupId);
           }
+          if (data.messageTemplate) {
+            setMessageTemplate(data.messageTemplate);
+          }
         }
       })
       .catch(() => {});
@@ -277,12 +298,20 @@ export function WhatsAppClient({ proximasMissas }: WhatsAppClientProps) {
           enabled: autoReminderEnabled,
           time: autoReminderTime,
           groupId: selectedGroupId,
+          messageTemplate,
         }),
       });
 
+      const data = await res.json();
       if (res.ok) {
-        setConfigFeedback('Configurações do lembrete diário salvas com sucesso!');
-        setTimeout(() => setConfigFeedback(null), 4000);
+        if (data.columnMissing) {
+          setColumnMissingWarning(true);
+          setConfigFeedback('Configurações salvas localmente! Nota: para persistir o modelo no banco de dados, execute a query SQL supabase/add_message_template.sql no Supabase.');
+        } else {
+          setColumnMissingWarning(false);
+          setConfigFeedback('Configurações e modelo de mensagem salvos com sucesso!');
+        }
+        setTimeout(() => setConfigFeedback(null), 5000);
       } else {
         alert('Erro ao salvar configurações do agendador.');
       }
@@ -808,6 +837,12 @@ export function WhatsAppClient({ proximasMissas }: WhatsAppClientProps) {
             </Alert>
           )}
 
+          {columnMissingWarning && (
+            <Alert variant="warning" title="Atenção: Atualização no Supabase Necessária">
+              As configurações foram salvas na tela, mas para gravar o modelo permanentemente no banco de dados, execute o comando do arquivo <code className="font-mono font-bold bg-amber-100 px-1 py-0.5 rounded">supabase/add_message_template.sql</code> no SQL Editor do Supabase.
+            </Alert>
+          )}
+
           {tomorrowFeedback && (
             <Alert
               variant={tomorrowFeedback.success ? 'success' : 'danger'}
@@ -873,6 +908,78 @@ export function WhatsAppClient({ proximasMissas }: WhatsAppClientProps) {
             </div>
           </div>
 
+          {/* 4. Modelo Padrão da Mensagem (Customizável) */}
+          <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-emerald-700" />
+                  <label htmlFor={templateTextareaId} className="text-xs font-bold text-slate-900 block">
+                    Modelo do Texto da Mensagem (WhatsApp):
+                  </label>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Edite livremente o texto que o bot envia. Altere o tempo de antecedência (ex: 20 min, 30 min), regras de substituição e saudações.
+                </p>
+              </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setMessageTemplate(DEFAULT_NOTIFICATION_TEMPLATE);
+                  setUserEditedTexto(null);
+                }}
+                className="text-[11px] h-7 px-2.5 self-start sm:self-auto text-slate-600 hover:text-slate-900"
+              >
+                <RotateCcw className="w-3 h-3 mr-1" />
+                Restaurar Padrão
+              </Button>
+            </div>
+
+            {/* Variáveis Dinâmicas */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mr-1">
+                Inserir variável:
+              </span>
+              {TEMPLATE_VARIABLES.map((v) => (
+                <button
+                  key={v.tag}
+                  type="button"
+                  onClick={() => {
+                    setMessageTemplate((prev) => `${prev} ${v.tag}`);
+                    setUserEditedTexto(null);
+                  }}
+                  title={`${v.label}: ${v.description}`}
+                  className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-mono font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 transition-colors cursor-pointer"
+                >
+                  {v.tag}
+                </button>
+              ))}
+            </div>
+
+            <textarea
+              id={templateTextareaId}
+              rows={9}
+              value={messageTemplate}
+              onChange={(e) => {
+                setMessageTemplate(e.target.value);
+                setUserEditedTexto(null);
+              }}
+              className="w-full p-3 font-mono text-xs rounded-xl border border-slate-300 bg-slate-50/70 text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-600 leading-relaxed"
+            />
+
+            <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200/80 text-[11px] text-slate-600 space-y-1">
+              <p>
+                💡 <strong>Como alterar o tempo de antecedência:</strong> Modifique a linha <em>&quot;Favor chegar com <strong>20 minutos de antecedência</strong>&quot;</em> acima para o tempo que desejar (ex: <em>30 minutos</em>).
+              </p>
+              <p>
+                Depois, clique no botão azul <strong>&quot;Salvar Configurações e Modelo&quot;</strong> abaixo para gravar.
+              </p>
+            </div>
+          </div>
+
           {/* Explicação da Lógica */}
           <div className="p-3.5 bg-emerald-50/50 border border-emerald-200/60 rounded-xl text-xs text-emerald-950 flex items-start gap-2.5">
             <Info className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
@@ -880,7 +987,7 @@ export function WhatsAppClient({ proximasMissas }: WhatsAppClientProps) {
               <p className="font-bold">Como funciona a regra diária:</p>
               <p className="text-slate-600">
                 Todos os dias às <strong>{autoReminderTime}</strong>, o sistema verificará se há celebração cadastrada para o dia seguinte.
-                Se houver missa amanhã, o sistema enviará a escala completa no grupo com as menções aos ministros (@).
+                Se houver missa amanhã, o sistema enviará a escala completa no grupo com as menções aos ministros (@) formatada exatamente com o seu modelo configurado acima.
                 Se não houver missa amanhã, nenhum envio é realizado, evitando mensagens desnecessárias no grupo.
               </p>
             </div>
@@ -914,7 +1021,7 @@ export function WhatsAppClient({ proximasMissas }: WhatsAppClientProps) {
               ) : (
                 <Settings className="w-3.5 h-3.5" />
               )}
-              <span>Salvar Configuração do Agendador</span>
+              <span>Salvar Configurações e Modelo</span>
             </Button>
           </div>
         </CardContent>

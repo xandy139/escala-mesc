@@ -19,15 +19,34 @@ export async function POST(req: NextRequest) {
     const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
     const supabase = createClient(url, key);
 
-    // Envia comando ao bot na Discloud
-    await supabase
+    // Prepara comando SEND_CUSTOM com a mensagem editada e menções reais
+    const updates: Record<string, unknown> = {
+      id: 'singleton',
+      command: 'SEND_CUSTOM',
+      selected_group_id: groupId,
+      custom_message: text,
+      custom_mentions: mentions || [],
+      updated_at: new Date().toISOString(),
+    };
+
+    let { error } = await supabase
       .from('whatsapp_bot_state')
-      .upsert({
-        id: 'singleton',
-        command: 'SEND_TEST',
-        selected_group_id: groupId,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: 'id' });
+      .upsert(updates, { onConflict: 'id' });
+
+    // Fallback se colunas custom_message ou custom_mentions ainda não tiverem sido adicionadas no Supabase
+    if (error && (error.code === '42703' || error.message?.includes('custom_message') || error.message?.includes('custom_mentions'))) {
+      delete updates.custom_message;
+      delete updates.custom_mentions;
+      updates.command = 'SEND_TEST';
+      const retry = await supabase
+        .from('whatsapp_bot_state')
+        .upsert(updates, { onConflict: 'id' });
+      error = retry.error;
+    }
+
+    if (error) {
+      throw error;
+    }
 
     return NextResponse.json({
       success: true,
